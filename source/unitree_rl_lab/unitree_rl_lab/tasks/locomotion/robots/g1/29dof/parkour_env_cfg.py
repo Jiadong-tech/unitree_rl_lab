@@ -27,33 +27,30 @@ from unitree_rl_lab.tasks.locomotion import mdp
 
 PARKOUR_TERRAINS_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
-    border_width=20.0,
+    border_width=5.0, # Reduced border width as requested
     num_rows=9,
-    num_cols=21,
+    num_cols=20, # Adjusted to 20 to fit 10x0.1 proportions evenly
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,
     difficulty_range=(0.0, 1.0),
     use_cache=False,
+    # Mix terrains by splitting into smaller chunks to interleave them (Random-like distribution)
     sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.2),
-        "gaps": terrain_gen.MeshGapTerrainCfg(
-            proportion=0.8,
-            gap_width_range=(0.2, 0.8),  # 0.2m to 0.8m wide gaps
-            platform_width=2.0,
-        ),
-        # "hurdles": terrain_gen.MeshHurdleTerrainCfg(
-        #     proportion=0.3,
-        #     hurdle_height_range=(0.1, 0.4), # 10cm to 40cm jumps
-        #     hurdle_width=(1.0, 4.0),
-        #     platform_width=(1.5, 3.0),
-        # ),
-        # "stepping_stones": terrain_gen.MeshSteppingStonesTerrainCfg(
-        #     proportion=0.2,
-        #     stone_size_range=(0.35, 0.6), # Small stones to step on
-        #     stone_distance_range=(0.1, 0.5),
-        #     holes=False,
-        # ),
+        "flat_warmup": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
+        
+        "mix_gap_1": terrain_gen.MeshGapTerrainCfg(proportion=0.1, gap_width_range=(0.2, 0.8), platform_width=2.0),
+        "mix_box_1": terrain_gen.MeshRandomGridTerrainCfg(proportion=0.1, grid_width=0.45, grid_height_range=(0.1, 0.4), platform_width=2.0),
+        "mix_stair_1": terrain_gen.MeshPyramidStairsTerrainCfg(proportion=0.1, step_height_range=(0.05, 0.20), step_width=0.3, platform_width=3.0, border_width=1.0, holes=False),
+        
+        "mix_gap_2": terrain_gen.MeshGapTerrainCfg(proportion=0.1, gap_width_range=(0.3, 0.8), platform_width=2.0),
+        "mix_box_2": terrain_gen.MeshRandomGridTerrainCfg(proportion=0.1, grid_width=0.45, grid_height_range=(0.15, 0.4), platform_width=2.0),
+        "mix_stair_2": terrain_gen.MeshPyramidStairsTerrainCfg(proportion=0.1, step_height_range=(0.05, 0.20), step_width=0.3, platform_width=3.0, border_width=1.0, holes=False),
+        
+        "mix_gap_3": terrain_gen.MeshGapTerrainCfg(proportion=0.1, gap_width_range=(0.2, 0.8), platform_width=2.0),
+        "mix_box_3": terrain_gen.MeshRandomGridTerrainCfg(proportion=0.1, grid_width=0.45, grid_height_range=(0.1, 0.4), platform_width=2.0),
+        
+        "flat_cooldown": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
     },
 )
 
@@ -89,7 +86,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/torso_link",
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
         ray_alignment="yaw",
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[4.0, 1.0]), # Optimized for 5m/s
         debug_vis=False, # Set to True to see the rays in GUI
         mesh_prim_paths=["/World/ground"],
     )
@@ -176,12 +173,12 @@ class CommandsCfg:
         heading_command=False,
         debug_vis=True,
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(0.5, 1.5), # Force forward motion!
+            lin_vel_x=(0.5, 5.0), # 0.5 to 5.0 m/s
             lin_vel_y=(-0.1, 0.1), 
             ang_vel_z=(-0.5, 0.5)
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 2.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.5, 0.5)
+            lin_vel_x=(-0.5, 6.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.5, 0.5)
         ),
     )
 
@@ -238,22 +235,22 @@ class RewardsCfg:
     # -- task (High weight on tracking to force obstacle traversal)
     track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=2.0, # Increased from 1.0 to encourage speed
+        weight=3.0, # Increased to overpower penalties and force traversal
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp, weight=0.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
 
-    alive = RewTerm(func=mdp.is_alive, weight=0.5) # Increased survival reward
+    alive = RewTerm(func=mdp.is_alive, weight=1.0) # Bonus for staying alive on difficult terrain
 
     # -- penalties
-    base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=-1.0) # Penalty for hoping around too much vertically
+    base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0) # Disabled to allow jumping!
     base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     
     # Regularization
-    joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
+    joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-1.0e-7) # Reduced
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.01) # Moderate penalty for 5m/s
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-5.0)
     
     # Cosmetical penalties
@@ -285,7 +282,7 @@ class RewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint", ".*_hip_yaw_joint"])},
     )
 
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-0.2) # Relaxed to allow pitching for jumps
     
     feet_slide = RewTerm(
         func=mdp.feet_slide,
@@ -308,7 +305,7 @@ class RewardsCfg:
         func=mdp.feet_gait,
         weight=1.0, # Keep it for rhythmic movement
         params={
-            "period": 0.8,
+            "period": 0.4, # ~2.5Hz, suited for 5m/s
             "offset": [0.0, 0.5],
             "threshold": 0.55,
             "command_name": "base_velocity",
@@ -326,6 +323,15 @@ class TerminationsCfg:
     base_contact = DoneTerm(
         func=mdp.illegal_contact,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="torso_link"), "threshold": 1.0},
+    )
+    # Robot fallen/blown up check
+    bad_orientation = DoneTerm(
+        func=mdp.bad_orientation,
+        params={"limit_angle": math.pi / 2}, # Kill if tilted more than 90 deg
+    )
+    base_height = DoneTerm(
+        func=mdp.root_height_below_minimum,
+        params={"minimum_height": 0.2}, # Kill if center of mass is too low (fallen)
     )
 
 
