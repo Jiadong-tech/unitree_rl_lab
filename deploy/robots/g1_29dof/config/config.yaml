@@ -15,6 +15,13 @@ FSM:
       id: 102
       type: Mimic
 
+    # 🥋 Martial Arts Performance Sequencer
+    # Chains multiple independently-trained policies into one continuous
+    # martial arts performance (Spring Festival Gala style).
+    MartialArtsSequencer:
+      id: 200
+      type: MartialArtsSequencer
+
   Passive:
     transitions: 
       FixStand: LT + up.on_pressed
@@ -65,6 +72,7 @@ FSM:
       Passive: LT + B.on_pressed
       Mimic_Dance_102: LT(2s) + down.on_pressed
       Mimic_Gangnam_Style: LT(2s) + left.on_pressed
+      MartialArtsSequencer: LT(2s) + right.on_pressed
 
     policy_dir: config/policy/velocity
     # policy_dir: ../../../logs/rsl_rl/unitree_g1_29dof_velocity
@@ -83,3 +91,34 @@ FSM:
     motion_file: config/policy/mimic/gangnam_style/params/G1_gangnam_style_V01.bvh_60hz.csv
     policy_dir: config/policy/mimic/gangnam_style/
 
+  # 🥋 Martial Arts Sequencer — chains policies in order
+  # Each segment is an independently-trained policy + motion file.
+  # The sequencer plays them back-to-back with brief transition holds.
+  # Reorder / add / remove segments to compose your performance.
+  MartialArtsSequencer:
+    transitions:
+      Passive: LT + B.on_pressed
+      FixStand: RB + X.on_pressed
+    transition_hold_s: 1.0  # seconds to hold pose between segments
+    segments:
+      - policy_dir: config/policy/mimic/martial_arts/front_kick/
+        motion_file: config/policy/mimic/martial_arts/front_kick/params/G1_front_kick.csv
+        fps: 50
+      - policy_dir: config/policy/mimic/martial_arts/lunge_punch/
+        motion_file: config/policy/mimic/martial_arts/lunge_punch/params/G1_lunge_punch.csv
+        fps: 50
+      - policy_dir: config/policy/mimic/martial_arts/roundhouse_kick/
+        motion_file: config/policy/mimic/martial_arts/roundhouse_kick/params/G1_roundhouse_kick.csv
+        fps: 50
+      - policy_dir: config/policy/mimic/martial_arts/side_kick/
+        motion_file: config/policy/mimic/martial_arts/side_kick/params/G1_side_kick.csv
+        fps: 50
+      - policy_dir: config/policy/mimic/martial_arts/heian_shodan/
+        motion_file: config/policy/mimic/martial_arts/heian_shodan/params/G1_heian_shodan.csv
+        fps: 50
+      - policy_dir: config/policy/mimic/martial_arts/bassai/
+        motion_file: config/policy/mimic/martial_arts/bassai/params/G1_bassai.csv
+        fps: 50
+      - policy_dir: config/policy/mimic/martial_arts/empi/
+        motion_file: config/policy/mimic/martial_arts/empi/params/G1_empi.csv
+        fps: 50

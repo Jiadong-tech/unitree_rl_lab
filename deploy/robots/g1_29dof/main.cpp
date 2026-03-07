@@ -2,6 +2,7 @@
 #include "FSM/State_Passive.h"
 #include "FSM/State_FixStand.h"
 #include "FSM/State_RLBase.h"
+#include "FSM/State_MartialArtsSequencer.h"
 #include "State_Mimic.h"
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
@@ -50,6 +51,7 @@ int main(int argc, char** argv)
 
     std::cout << "Press [L2 + Up] to enter FixStand mode.\n";
     std::cout << "And then press [R1 + X] to start controlling the robot.\n";
+    std::cout << "In Velocity mode, press [L2(2s) + Right] for Martial Arts Sequencer.\n";
 
     while (true)
     {

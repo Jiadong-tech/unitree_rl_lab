@@ -80,3 +80,29 @@ def feet_contact_time(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, thresh
     last_contact_time = contact_sensor.data.last_contact_time[:, sensor_cfg.body_ids]
     reward = torch.sum((last_contact_time < threshold) * first_air, dim=-1)
     return reward
+
+
+def motion_joint_pos_error_exp(
+    env: ManagerBasedRLEnv, command_name: str, std: float
+) -> torch.Tensor:
+    """Reward for tracking reference joint positions.
+
+    Computes per-joint squared error between NPZ reference joint_pos and actual
+    robot joint_pos (both in Isaac Lab articulation order), then applies exp kernel.
+
+    This is critical for martial arts: body_pos/body_ori only tracks link CoMs,
+    but without joint_pos reward the policy can achieve similar body positions
+    with completely wrong knee/ankle/arm configurations (姿势怪异).
+
+    Args:
+        command_name: Name of the MotionCommand term.
+        std: Standard deviation for exp kernel. Use ~0.8 rad for 29-joint L2.
+             At error=0.8rad per joint * sqrt(29) ≈ 4.3 total, reward ≈ 0.37.
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    # Both joint_pos tensors are in Isaac Lab articulation order [num_envs, 29]
+    ref_joint_pos = command.joint_pos          # [E, 29] from NPZ
+    robot_joint_pos = command.robot_joint_pos  # [E, 29] from robot.data
+    # Mean squared error across all joints
+    error = torch.mean(torch.square(ref_joint_pos - robot_joint_pos), dim=-1)  # [E]
+    return torch.exp(-error / std**2)
