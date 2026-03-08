@@ -267,7 +267,7 @@ class MartialArtsRewardsCfg:
     # -- regularization
     joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-1e-5)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
@@ -282,7 +282,7 @@ class MartialArtsRewardsCfg:
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=0.5,
+        weight=1.0,
         params={"command_name": "motion", "std": 0.8},  # ↑ from 0.4 (covers torso rotation error)
     )
 
@@ -300,11 +300,24 @@ class MartialArtsRewardsCfg:
 
     # -- joint position tracking (v4: critical for correct martial arts posture)
     # Without this, policy can match body CoM positions with wrong knee/ankle configs.
-    # std=0.8: mean per-joint error of 0.8rad → reward≈0.53 (alive gradient)
+    # std=0.6: mean per-joint error of 0.6rad
     motion_joint_pos = RewTerm(
         func=mdp.motion_joint_pos_error_exp,
         weight=2.0,
-        params={"command_name": "motion", "std": 0.8},
+        params={"command_name": "motion", "std": 0.6},
+    )
+
+    # -- explicit end-effector tracking (for "Spring Festival Gala" precision & explosiveness)
+    # Target hands and feet with tighter stds to ensure crisp punches and snappy kicks
+    motion_ee_pos = RewTerm(
+        func=mdp.motion_relative_body_position_error_exp,
+        weight=3.0,  # highly prioritized
+        params={"command_name": "motion", "std": 0.2, "body_names": END_EFFECTOR_BODIES},
+    )
+    motion_ee_lin_vel = RewTerm(
+        func=mdp.motion_global_body_linear_velocity_error_exp,
+        weight=1.0,  # emphasize the striking snappy velocity
+        params={"command_name": "motion", "std": 1.0, "body_names": END_EFFECTOR_BODIES},
     )
 
     # -- velocity tracking (widened std → less dominant vs position)

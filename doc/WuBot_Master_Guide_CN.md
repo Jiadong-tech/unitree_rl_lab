@@ -389,7 +389,7 @@ def motion_joint_pos_error_exp(...):
 
 **根因**：`motion_joint_pos` 的 std=0.8 对于 29 个关节来说仍然偏宽松。当整体 MSE = 0.64 rad² 时 reward ≈ 0.37，这意味着平均每个关节允许偏差 ~0.15 rad（约8.6度）。手臂因为力矩限制小（effort_limit=25Nm），在被推扰后恢复慢，容易晃荡。
 
-**建议调整**：
+**现已实施调整 (v5)**：
 
 ```python
 # 简单方案: 收紧 std, 提升 weight
@@ -408,46 +408,53 @@ motion_joint_pos = RewTerm(
 
 **根因**：`anchor_ori` 的 std=0.8、weight=0.5 过于宽松。正踢腿时，策略为了保持平衡会大幅弯腰，导致观感"佝偻"。
 
-**建议调整**：
+**现已实施调整 (v5)**：
 
 ```python
 motion_global_anchor_ori = RewTerm(
     func=mdp.motion_global_anchor_orientation_error_exp,
-    weight=1.0,                    # ↑ 从 0.5 翻倍
-    params={"command_name": "motion", "std": 0.5},  # ↓ 从 0.8 收紧
+    weight=1.0,                    # ↑ 从 0.5 翻倍，强迫躯干稳定
+    params={"command_name": "motion", "std": 0.8},  
 )
 ```
 
 #### 问题 C: 动作不够爆发 / 出现抖动
 
-**根因**：`action_rate_l2` 的 weight=-0.1 会惩罚动作的快速变化。对于武术的瞬态爆发动作来说，这个惩罚可能过强。
+**根因**：`action_rate_l2` 的 weight=-0.1 会惩罚动作的快速变化。对于武术的瞬态爆发动作来说，这个惩罚过强。
 
-**建议调整**：
+**现已实施调整 (v5)**：
 
 ```python
-action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.05)  # ↓ 从 -0.1 减半
+action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.05)  # ↓ 从 -0.1 减半，解锁瞬间爆发力
 ```
 
 #### 问题 D: 踢腿幅度不够
 
 **根因**：全身 `body_pos` 的 std=0.5 对于脚尖在空间中 0.8m 的大幅移动仍可能不够。可以给末端执行器额外加权。
 
-**建议调整**（如果踢腿仍不够高）：
+**现已实施调整 (v5)**：
 
 ```python
-# 新增: 末端执行器专项追踪 (只追踪手脚)
+# 新增: 末端执行器专项追踪 (只追踪手脚以模拟春晚级爆发力与准度)
 motion_ee_pos = RewTerm(
     func=mdp.motion_relative_body_position_error_exp,
-    weight=3.0,  # 高权重
+    weight=3.0,  # 极高权重
     params={
         "command_name": "motion",
-        "std": 0.3,
+        "std": 0.2,   # 极苛刻要求
         "body_names": END_EFFECTOR_BODIES,
     },
 )
+
+# 新增: 末端执行器的打出瞬时速度，确保招式利落
+motion_ee_lin_vel = RewTerm(
+    func=mdp.motion_global_body_linear_velocity_error_exp,
+    weight=1.0,  
+    params={"command_name": "motion", "std": 1.0, "body_names": END_EFFECTOR_BODIES},
+)
 ```
 
-### 6.3 推荐的 v5 调参汇总
+### 6.3 已经上线的 v5 调参汇总 (2026 最新代码已应用)
 
 | 奖励项 | v4 (当前) | v5 (建议) | 修改原因 |
 |--------|----------|----------|---------|
@@ -542,47 +549,44 @@ bash scripts/mimic/martial_arts_pipeline.sh train all
   完全不同的关节配置!
 ```
 
-#### 7.4.2 三种解决方案
+#### 7.4.2 解决方案（现已全面实现风险规避）
 
-| 方案 | 实现位置 | 难度 | 效果 |
-|------|---------|------|------|
-| **A. Transition Hold** (当前) | C++ Sequencer | ⭐ | 保持姿势1秒, 直接跳到下一段 |
-| **B. 线性插值过渡** | C++ Sequencer | ⭐⭐ | 0.5~1秒内关节平滑过渡 |
-| **C. 鲁棒性注入** | 训练配置 | ⭐⭐⭐ | 加大初始扰动, 策略学会任意起步 |
+基于上述串联时可能发生的**连环翻车（Cascading Failure）**风险，项目中已采用**双重保险**来彻底规避前后动作的依赖：
 
-**方案 B 实现思路** (修改 `State_MartialArtsSequencer.h`):
+**1. 部署层 (C++): 动作间平滑插值过渡（已在 `State_MartialArtsSequencer.h` 中实现）**
+此前仅简单使用 Transition Hold（直接锁死电机保持僵硬姿态，待下一策略加载后容易产生剧烈的动作跳变），现已全面升级为**关节级平滑线性插值**。
+* **机制**: 当段落 A 结束时，保存最后时刻的所有关节目标角（`start_q`）；立即在后台加载段落 B，并步进一次以获取段落 B 的起手第一帧关节坐标（`target_q`）。
+* **平滑**: 在 `transition_hold_s_` 的时间窗口内，以高频进行线性插值（`alpha` 平滑），将机器人安全柔和地“拉回”到下一套动作的标准起手式，彻底截断了上一个动作导致的姿态代偿传染到下一个动作。
 
 ```cpp
-// 在 transition hold 期间, 不保持姿势, 而是线性插值:
-auto last_action = get_last_segment_final_action();
-load_segment(next_segment);
-auto first_action = get_next_segment_initial_action();
-
-for (float t = 0; t < transition_hold_s_; t += step_dt) {
-    float alpha = t / transition_hold_s_;  // 0→1
-    for (int j = 0; j < 29; ++j) {
-        target[j] = (1-alpha) * last_action[j] + alpha * first_action[j];
+// 核心逻辑已实现在 policy_loop() 与 run() 的结合中：
+// 3. Linearly interpolate between start_q and target_q
+int hold_steps = static_cast<int>(transition_hold_s_ / current_env_->step_dt);
+for (int step = 0; step <= hold_steps && policy_thread_running_; ++step) {
+    float alpha = static_cast<float>(step) / hold_steps;
+    std::vector<float> interp_q(start_q.size());
+    for(size_t i=0; i<start_q.size(); ++i) {
+        interp_q[i] = start_q[i] + alpha * (target_q[i] - start_q[i]);
     }
-    send_to_motors(target);
-    sleep(step_dt);
+    transition_q_ = interp_q; // 发送给 1000Hz run() 循环
+    std::this_thread::sleep_for(std::chrono::milliseconds(int(current_env_->step_dt * 1000)));
 }
 ```
 
-**方案 C 实现思路** (修改 `tracking_env_cfg.py`):
+**2. 训练层 (Python): 鲁棒性注入（防止小偏差被放大）**
+哪怕有插值，起动时机器人的动量和现实偏差仍客观存在。因此在训练单动作阶段，我们加大初始状态的随机噪声。
+这迫使网络学会在初始姿态出现轻微偏差（如插值精度有限导致关节偏差）时，具备极强的强行纠偏能力，而不是随着初始误差产生“雪崩”。
 
 ```python
-# 加大初始状态扰动, 让策略能从散乱状态起步
+# 修改 tracking_env_cfg.py 中的 _make_command_cfg 加大初始扰动
 def _make_command_cfg(npz_filename):
     return mdp.MotionCommandCfg(
         ...,
         pose_range={
-            "x": (-0.1, 0.1),      # ↑ 从 ±0.05
-            "y": (-0.1, 0.1),      # ↑ 从 ±0.05
-            "roll": (-0.3, 0.3),    # ↑ 从 ±0.1
-            "pitch": (-0.3, 0.3),   # ↑ 从 ±0.1
-            "yaw": (-0.5, 0.5),     # ↑ 从 ±0.2
+            "roll": (-0.3, 0.3),    # 提供偏斜起步抗性
+            "pitch": (-0.3, 0.3),   
         },
-        joint_position_range=(-0.3, 0.3),  # ↑ 从 ±0.1
+        joint_position_range=(-0.3, 0.3),  
     )
 ```
 
@@ -700,11 +704,12 @@ registered_checks: bad_orientation(1.0) → Passive
 
 | 优先级 | 改进项 | 具体做法 |
 |--------|--------|----------|
-| P0 | Front Kick 姿势修复 | 收紧 joint_pos std, 提升 anchor_ori weight |
-| P0 | 放松 action_rate | weight -0.1 → -0.05 |
+| ~~P0~~ | ~~Front Kick 姿势修复~~ | **(已完成)** 收紧 joint_pos std, 提升 anchor_ori weight |
+| ~~P0~~ | ~~放松 action_rate~~ | **(已完成)** weight -0.1 → -0.05 |
+| ~~P0~~ | ~~末端极速与精准追踪~~ | **(已完成)** 引入 `motion_ee_pos` 和 `motion_ee_lin_vel` 保证“春晚级”爆发力与精准打击 |
 | P1 | 训练 Lunge Punch | 同配置直接训练 |
 | P1 | 训练 Side Kick | 可能需放宽 ee_body_pos 到 0.8m |
-| P2 | 实现插值过渡 | 修改 State_MartialArtsSequencer |
+| ~~P2~~ | ~~实现插值过渡~~ | **(已完成)** 在 C++ Sequencer 中植入了安全平滑切换机制，解决连环翻车风险 |
 
 ### 9.2 中期 (1-2月)
 

@@ -29,6 +29,7 @@
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/observations/motion_observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
+#include "LinearInterpolator.h"
 
 #include <vector>
 #include <string>
@@ -111,9 +112,18 @@ public:
     void run() override
     {
         if (!current_env_) return;
-        auto action = current_env_->action_manager->processed_actions();
-        for (int i = 0; i < current_env_->robot->data.joint_ids_map.size(); ++i) {
-            lowcmd->msg_.motor_cmd()[current_env_->robot->data.joint_ids_map[i]].q() = action[i];
+
+        if (in_transition_ && transition_q_.size() == current_env_->robot->data.joint_ids_map.size()) {
+            // Apply interpolated smooth safe poses during transition
+            for (int i = 0; i < current_env_->robot->data.joint_ids_map.size(); ++i) {
+                 lowcmd->msg_.motor_cmd()[current_env_->robot->data.joint_ids_map[i]].q() = transition_q_[i];
+            }
+        } 
+        else {
+            auto action = current_env_->action_manager->processed_actions();
+            for (int i = 0; i < current_env_->robot->data.joint_ids_map.size(); ++i) {
+                lowcmd->msg_.motor_cmd()[current_env_->robot->data.joint_ids_map[i]].q() = action[i];
+            }
         }
     }
 
@@ -220,25 +230,49 @@ private:
                 break;
             }
 
-            // ── Transition hold: keep current pose ──
+            // ── Transition hold: smooth interpolation instead of hard jump ──
             if (transition_hold_s_ > 0.0f) {
-                spdlog::info("MartialArtsSequencer: transition hold {:.1f}s before segment {}",
+                spdlog::info("MartialArtsSequencer: smooth transition {:.1f}s to segment {}",
                     transition_hold_s_, current_segment_);
+                
+                // 1. Capture end state of PREVIOUS segment
+                std::vector<float> start_q(current_env_->robot->data.joint_ids_map.size());
+                auto prev_action = current_env_->action_manager->processed_actions();
+                for(int i=0; i<start_q.size(); ++i) start_q[i] = prev_action[i];
+
                 in_transition_ = true;
-                auto hold_until = clock::now()
-                    + std::chrono::duration_cast<clock::duration>(
-                        std::chrono::duration<double>(transition_hold_s_));
-                // During hold, we just keep sending the last action (motors hold position)
-                while (policy_thread_running_ && clock::now() < hold_until) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                
+                // 2. Load NEXT segment safely (it will reset its own env and populate a default start pose)
+                load_segment(current_segment_);
+                if (!current_env_) break;
+                current_env_->reset();
+                current_env_->step(); // initial step to get target action for new policy
+                
+                std::vector<float> target_q(current_env_->robot->data.joint_ids_map.size());
+                auto next_action = current_env_->action_manager->processed_actions();
+                for(int i=0; i<target_q.size(); ++i) target_q[i] = next_action[i];
+
+                // 3. Linearly interpolate between start_q and target_q
+                int hold_steps = static_cast<int>(transition_hold_s_ / current_env_->step_dt);
+                for (int step = 0; step <= hold_steps && policy_thread_running_; ++step) {
+                    float alpha = static_cast<float>(step) / hold_steps;
+                    
+                    std::vector<float> interp_q(start_q.size());
+                    for(size_t i=0; i<start_q.size(); ++i) {
+                        interp_q[i] = start_q[i] + alpha * (target_q[i] - start_q[i]);
+                    }
+                    
+                    // pass to run() loop
+                    transition_q_ = interp_q;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(int(current_env_->step_dt * 1000)));
                 }
+                
                 in_transition_ = false;
+            } else {
+                // If no transition hold, just load directly (not recommended)
+                if (!policy_thread_running_) break;
+                load_segment(current_segment_);
             }
-
-            if (!policy_thread_running_) break;
-
-            // Load next segment
-            load_segment(current_segment_);
         }
     }
 
@@ -257,6 +291,7 @@ private:
     float segment_duration_s_ = 0.0f;
     bool finished_ = false;
     bool in_transition_ = false;
+    std::vector<float> transition_q_;
 
     std::unique_ptr<isaaclab::ManagerBasedRLEnv> current_env_;
     std::thread policy_thread_;
