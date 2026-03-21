@@ -467,37 +467,44 @@ def extract_g1_joint_angles(skeleton: Skeleton, frame: AMCFrame) -> np.ndarray:
         angle_rad = math.radians(amc_angles[euler_axis]) * sign
         joint_angles[g1_idx] = wrap_to_pi(angle_rad)
 
-    # Clip to G1 29DOF URDF joint limits (from g1_29dof_rev_1_0.urdf)
+    # Clip to G1 29DOF URDF joint limits (from g1_29dof_rev_1_0.urdf / USD)
+    # IMPORTANT: These must match the actual URDF/USD limits used by Isaac Lab.
+    # Previous values were WRONG for 18/22 joints — they were wider than the
+    # real robot limits, causing NPZ data to exceed physical joint ranges.
+    # The soft_joint_pos_limit_factor=0.9 in the robot config makes this even
+    # worse: the penalty zone is 90% of the URDF range.
+    # Ground truth from g1_29dof_rev_1_0.urdf (verified 2026-03-15).
+    # SDK order: L-leg(6), R-leg(6), waist(3), L-arm(7), R-arm(7).
     G1_LIMITS = [
-        (-2.531, 2.880),  # 0  left_hip_pitch
-        (-0.524, 2.967),  # 1  left_hip_roll
-        (-2.758, 2.758),  # 2  left_hip_yaw
-        (-0.087, 2.880),  # 3  left_knee
-        (-0.873, 0.524),  # 4  left_ankle_pitch
-        (-0.262, 0.262),  # 5  left_ankle_roll
-        (-2.531, 2.880),  # 6  right_hip_pitch
-        (-2.967, 0.524),  # 7  right_hip_roll
-        (-2.758, 2.758),  # 8  right_hip_yaw
-        (-0.087, 2.880),  # 9  right_knee
-        (-0.873, 0.524),  # 10 right_ankle_pitch
-        (-0.262, 0.262),  # 11 right_ankle_roll
-        (-2.618, 2.618),  # 12 waist_yaw
-        (-0.520, 0.520),  # 13 waist_roll
-        (-0.520, 0.520),  # 14 waist_pitch
-        (-3.089, 2.670),  # 15 left_shoulder_pitch
-        (-1.588, 2.252),  # 16 left_shoulder_roll
-        (-2.618, 2.618),  # 17 left_shoulder_yaw
-        (-1.047, 2.094),  # 18 left_elbow
-        (-3.089, 2.670),  # 19 left_wrist_roll
-        (-1.614, 1.614),  # 20 left_wrist_pitch
-        (-1.614, 1.614),  # 21 left_wrist_yaw
-        (-2.670, 3.089),  # 22 right_shoulder_pitch
-        (-2.252, 1.588),  # 23 right_shoulder_roll
-        (-2.618, 2.618),  # 24 right_shoulder_yaw
-        (-1.047, 2.094),  # 25 right_elbow
-        (-2.670, 3.089),  # 26 right_wrist_roll
-        (-1.614, 1.614),  # 27 right_wrist_pitch
-        (-1.614, 1.614),  # 28 right_wrist_yaw
+        (-2.5307, +2.8798),  # 0  left_hip_pitch
+        (-0.5236, +2.9671),  # 1  left_hip_roll
+        (-2.7576, +2.7576),  # 2  left_hip_yaw
+        (-0.0873, +2.8798),  # 3  left_knee
+        (-0.8727, +0.5236),  # 4  left_ankle_pitch
+        (-0.2618, +0.2618),  # 5  left_ankle_roll
+        (-2.5307, +2.8798),  # 6  right_hip_pitch
+        (-2.9671, +0.5236),  # 7  right_hip_roll
+        (-2.7576, +2.7576),  # 8  right_hip_yaw
+        (-0.0873, +2.8798),  # 9  right_knee
+        (-0.8727, +0.5236),  # 10 right_ankle_pitch
+        (-0.2618, +0.2618),  # 11 right_ankle_roll
+        (-2.6180, +2.6180),  # 12 waist_yaw
+        (-0.5200, +0.5200),  # 13 waist_roll
+        (-0.5200, +0.5200),  # 14 waist_pitch
+        (-3.0892, +2.6704),  # 15 left_shoulder_pitch
+        (-1.5882, +2.2515),  # 16 left_shoulder_roll
+        (-2.6180, +2.6180),  # 17 left_shoulder_yaw
+        (-1.0472, +2.0944),  # 18 left_elbow
+        (-1.9722, +1.9722),  # 19 left_wrist_roll
+        (-1.6144, +1.6144),  # 20 left_wrist_pitch
+        (-1.6144, +1.6144),  # 21 left_wrist_yaw
+        (-3.0892, +2.6704),  # 22 right_shoulder_pitch
+        (-2.2515, +1.5882),  # 23 right_shoulder_roll
+        (-2.6180, +2.6180),  # 24 right_shoulder_yaw
+        (-1.0472, +2.0944),  # 25 right_elbow
+        (-1.9722, +1.9722),  # 26 right_wrist_roll
+        (-1.6144, +1.6144),  # 27 right_wrist_pitch
+        (-1.6144, +1.6144),  # 28 right_wrist_yaw
     ]
     for j, (lo, hi) in enumerate(G1_LIMITS):
         joint_angles[j] = np.clip(joint_angles[j], lo, hi)

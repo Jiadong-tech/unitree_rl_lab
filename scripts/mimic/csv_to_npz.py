@@ -276,7 +276,24 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
         joint_vel = robot.data.default_joint_vel.clone()
         joint_pos[:, robot_joint_indexes] = motion_dof_pos
         joint_vel[:, robot_joint_indexes] = motion_dof_vel
-        robot.write_joint_state_to_sim(joint_pos, joint_vel)
+
+        # Clamp to URDF soft limits so that body FK is physically consistent.
+        # Without this, sim.render() (no sim.step()) does NOT enforce limits,
+        # causing body_pos_w to represent poses with joints beyond URDF range.
+        # The clamped joint_pos + FK body data then form a consistent reference
+        # that training can actually track without conflicting rewards.
+        #
+        # NOTE: robot.data.soft_joint_pos_limits comes from the USD model,
+        # which may differ from URDF limits (e.g. wrist_pitch: USD ±1.6144
+        # vs URDF ±0.3491).  This is intentional — training also uses the
+        # USD limits, so data and simulation are consistent.  Deployment to
+        # real hardware should apply the tighter URDF limits separately.
+        joint_lo = robot.data.soft_joint_pos_limits[0, :, 0]
+        joint_hi = robot.data.soft_joint_pos_limits[0, :, 1]
+        joint_pos_clamped = torch.clamp(joint_pos, joint_lo, joint_hi)
+        joint_vel_clamped = torch.clamp(joint_vel, -32.0, 32.0)  # G1 motor velocity limit
+
+        robot.write_joint_state_to_sim(joint_pos_clamped, joint_vel_clamped)
         sim.render()  # We don't want physic (sim.step())
         scene.update(sim.get_physics_dt())
 
@@ -284,8 +301,12 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
         sim.set_camera_view(pos_lookat + np.array([2.0, 2.0, 0.5]), pos_lookat)
 
         if not file_saved:
-            log["joint_pos"].append(robot.data.joint_pos[0, :].cpu().numpy().copy())
-            log["joint_vel"].append(robot.data.joint_vel[0, :].cpu().numpy().copy())
+            # Save the clamped joint_pos/vel directly (not robot.data.joint_pos)
+            # to guarantee values are within soft limits.
+            # body_pos_w / body_quat_w are read from sim FK which uses the
+            # clamped values we wrote via write_joint_state_to_sim().
+            log["joint_pos"].append(joint_pos_clamped[0, :].cpu().numpy().copy())
+            log["joint_vel"].append(joint_vel_clamped[0, :].cpu().numpy().copy())
             log["body_pos_w"].append(robot.data.body_pos_w[0, :].cpu().numpy().copy())
             log["body_quat_w"].append(robot.data.body_quat_w[0, :].cpu().numpy().copy())
             log["body_lin_vel_w"].append(robot.data.body_lin_vel_w[0, :].cpu().numpy().copy())

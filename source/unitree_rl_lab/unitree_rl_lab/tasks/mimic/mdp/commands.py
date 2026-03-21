@@ -72,6 +72,20 @@ class MotionCommand(CommandTerm):
         )
 
         self.motion = MotionLoader(self.cfg.motion_file, self.body_indexes, device=self.device)
+
+        # Clamp NPZ joint_pos to URDF soft limits at load time.
+        # This prevents reward targets from exceeding physical joint ranges,
+        # which would cause conflicting reward signals (joint_limit penalty
+        # fights joint_pos tracking reward → jitter/flying).
+        soft_lo = self.robot.data.soft_joint_pos_limits[0, :, 0]  # [29]
+        soft_hi = self.robot.data.soft_joint_pos_limits[0, :, 1]  # [29]
+        original = self.motion.joint_pos.clone()
+        self.motion.joint_pos = torch.clamp(self.motion.joint_pos, soft_lo, soft_hi)
+        n_clamped = (self.motion.joint_pos != original).any(dim=-1).sum().item()
+        if n_clamped > 0:
+            print(f"[MotionCommand] WARNING: Clamped joint_pos in {n_clamped}/{self.motion.joint_pos.shape[0]} frames "
+                  f"to URDF soft limits (soft_joint_pos_limit_factor={self.robot.cfg.soft_joint_pos_limit_factor})")
+
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.body_pos_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 3, device=self.device)
         self.body_quat_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 4, device=self.device)

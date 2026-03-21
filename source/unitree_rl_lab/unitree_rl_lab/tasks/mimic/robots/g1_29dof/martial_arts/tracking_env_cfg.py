@@ -228,46 +228,124 @@ class EventCfg:
 
 
 # ---------------------------------------------------------------------------
+# Bodies that must NOT touch the ground (for illegal_contact termination)
+# ---------------------------------------------------------------------------
+# Only feet (ankle_roll_link) and hands (wrist_yaw_link) are allowed ground
+# contact. Every other articulation body should be in this list.
+#
+# IMPORTANT: body_names must match robot.body_names (the 30 articulation
+# bodies exposed by PhysX).  Fixed-joint links like "pelvis_contour_link",
+# "logo_link", "head_link" are merged into their parent by PhysX and do
+# NOT appear as separate articulation bodies — using them here causes a
+# runtime crash ("Available strings: [...]").
+#
+# The 30 articulation bodies are:
+#   pelvis, left/right_hip_{pitch,roll,yaw}_link,
+#   left/right_knee_link, left/right_ankle_{pitch,roll}_link,
+#   waist_{yaw,roll}_link, torso_link,
+#   left/right_shoulder_{pitch,roll,yaw}_link,
+#   left/right_elbow_link, left/right_wrist_{roll,pitch,yaw}_link
+#
+# Allowed contacts (4): ankle_roll × 2, wrist_yaw × 2
+# Illegal contacts: 30 − 4 = 26
+ILLEGAL_CONTACT_BODIES = [
+    # pelvis
+    "pelvis",
+    # legs — hip
+    "left_hip_pitch_link",
+    "right_hip_pitch_link",
+    "left_hip_roll_link",
+    "right_hip_roll_link",
+    "left_hip_yaw_link",
+    "right_hip_yaw_link",
+    # legs — knee
+    "left_knee_link",
+    "right_knee_link",
+    # legs — ankle_pitch (above foot, can touch during bad kicks)
+    "left_ankle_pitch_link",
+    "right_ankle_pitch_link",
+    # waist + torso (logo_link / head_link are merged into torso by PhysX)
+    "waist_yaw_link",
+    "waist_roll_link",
+    "torso_link",
+    # arms — shoulder
+    "left_shoulder_pitch_link",
+    "right_shoulder_pitch_link",
+    "left_shoulder_roll_link",
+    "right_shoulder_roll_link",
+    "left_shoulder_yaw_link",
+    "right_shoulder_yaw_link",
+    # arms — elbow
+    "left_elbow_link",
+    "right_elbow_link",
+    # arms — wrist (roll and pitch; wrist_yaw is the "hand" → allowed)
+    "left_wrist_roll_link",
+    "right_wrist_roll_link",
+    "left_wrist_pitch_link",
+    "right_wrist_pitch_link",
+]
+
+
+# ---------------------------------------------------------------------------
 # Reward Configuration for Martial Arts
 # ---------------------------------------------------------------------------
 #
-# Tuning notes (v4 — added joint_pos tracking to fix bizarre posture):
+# Tuning notes (v9 — fix bad postures: knees on ground, twisted arms):
 #
-#   Root cause of "weird posture" (姿势怪异):
-#     body_pos tracks link CoMs (center of mass positions) — a robot can have
-#     the right CoM trajectory while bending knees in completely wrong ways.
-#     body_ori tracks link orientations — better, but 14 bodies still leaves
-#     DOF for wrong joint-level configurations.
-#     → NO reward term was directly penalizing wrong joint angles (e.g., wrong
-#       knee bend depth, wrong ankle plantar/dorsiflexion).
+#   v9 ROOT CAUSE ANALYSIS (from play.py observations):
+#     v8 trained model exhibits:
+#       - 膝盖着地 (knees touching ground) — no contact termination existed
+#       - 胳膊拧过头 (arms twisted unnaturally) — no joint_pos tracking reward
+#       - 手势和腿部姿势怪异 (weird hand/leg poses) — degenerate FK solutions
 #
-#   Fix (v4): Add motion_joint_pos_error_exp
-#     - Directly computes mean squared error over all 29 joint angles
-#     - std=0.8 → at per-joint mean error of 0.8 rad: reward = exp(-0.64) ≈ 0.53
-#     - weight=2.0 (same as body tracking) — joint angles are as important as
-#       body positions for faithful martial arts reproduction
+#     Root causes:
+#       1. motion_joint_pos_error_exp was REMOVED in v8, but it is CRITICAL
+#          for martial arts. Body position tracking (CoM of links) allows
+#          degenerate solutions: the policy can achieve the same link CoM
+#          positions with completely wrong joint configurations.
+#          The function's own docstring warns: "without joint_pos reward the
+#          policy can achieve similar body positions with completely wrong
+#          knee/ankle/arm configurations (姿势怪异)"
+#       2. No body-ground contact TERMINATION existed. Only a weak penalty
+#          (undesired_contacts, weight=-0.1) that the policy learns to ignore.
+#       3. undesired_contacts penalty weight=-0.1 is too small to prevent
+#          the policy from exploiting ground contact for stability.
 #
-#   v3 fixes retained:
-#   1. body_ori std: 0.4 → 0.8, weight: 1.0 → 1.5
-#      → At error=0.79 rad: std=0.4 gives reward=0.020 (dead!), std=0.8 gives 0.377 (alive!)
-#   2. body_pos std: 0.3 → 0.5  (covers 0.24 m initial error with margin)
-#   3. Velocity weights: 1.0 → 0.5, stds widened (lin 1.0→1.5, ang 3.14→4.0)
-#      → less dominant, won't fight position/orientation tracking
+#   v9 FIXES:
+#     1. RE-ENABLE motion_joint_pos_error_exp (weight=2.0, std=0.8)
+#        — Forces policy to match reference joint angles, not just link CoMs
+#        — This is THE key fix for twisted arms and weird poses
+#     2. ADD illegal_contact termination for knees, elbows, torso, pelvis, head
+#        — Hard termination: episode ends immediately on forbidden contact
+#        — Uses Isaac Lab's built-in mdp.illegal_contact
+#     3. INCREASE undesired_contacts penalty from -0.1 to -1.0
+#        — Stronger gradient signal against any non-foot/hand ground contact
 #
-#   ee_body_pos termination relaxed (v4):
-#     Front kick raises foot to ~0.8m height. z-only threshold 0.25m was
-#     terminating episodes during the kick itself. Raised to 0.6m.
+#   PRESERVED from v8:
+#     - Relaxed termination thresholds (anchor_pos=0.5, anchor_ori=1.2,
+#       ee_body_pos=0.8) — these correctly fixed v7's training collapse
+#     - Body/velocity tracking weights and stds
+#     - Action rate penalty at -0.1
+#
+#   HISTORY:
+#     v9: fix bad postures (re-enable joint_pos, add contact termination)
+#     v8: fix training collapse (relax terminations, align with gangnam)
+#     v7: balanced tracking, BUT anchor_pos termination too strict → collapse
+#     v6: joint-only (body data was corrupted by fix_npz_motion_quality.py)
+#     v5: joint+body but body data was inconsistent → jitter
+#     v4: added joint_pos_error_exp
+#     v3: body position/orientation tuning
 # ---------------------------------------------------------------------------
 
 
 @configclass
 class MartialArtsRewardsCfg:
-    """Reward terms optimized for martial arts motion tracking (v3)."""
+    """Reward terms — v9: fix bad postures (knees on ground, twisted arms)."""
 
-    # -- regularization
+    # -- regularization (match gangnam proven values)
     joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-1e-5)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
@@ -277,65 +355,66 @@ class MartialArtsRewardsCfg:
     # -- anchor tracking (root body = torso_link)
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=0.5,
-        params={"command_name": "motion", "std": 0.3},
+        weight=1.5,
+        params={"command_name": "motion", "std": 0.5},
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
         weight=1.0,
-        params={"command_name": "motion", "std": 0.8},  # ↑ from 0.4 (covers torso rotation error)
+        params={"command_name": "motion", "std": 0.5},
     )
 
     # -- full body tracking
     motion_body_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=1.5,
-        params={"command_name": "motion", "std": 0.5},  # ↑ from 0.3 (was causing vanishing grad)
+        weight=1.0,
+        params={"command_name": "motion", "std": 0.3},
     )
     motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
-        weight=1.5,  # ↑ from 1.0 (arms were completely ignored)
-        params={"command_name": "motion", "std": 0.8},  # ↑ from 0.4 (covers 0.79 rad init error!)
+        weight=1.0,
+        params={"command_name": "motion", "std": 0.4},
     )
 
-    # -- joint position tracking (v4: critical for correct martial arts posture)
-    # Without this, policy can match body CoM positions with wrong knee/ankle configs.
-    # std=0.6: mean per-joint error of 0.6rad
+    # -- joint position tracking (v9: RE-ENABLED — critical for martial arts!)
+    # Without this, body_pos/ori only tracks link CoMs. The policy finds
+    # degenerate FK solutions: correct CoM positions but completely wrong
+    # joint angles → twisted arms, weird knee/ankle configurations.
+    # This was the #1 root cause of "胳膊拧过头" and "姿势怪异".
     motion_joint_pos = RewTerm(
         func=mdp.motion_joint_pos_error_exp,
-        weight=2.0,
-        params={"command_name": "motion", "std": 0.6},
+        weight=2.0,  # v9: re-enabled (was 3.0 in v7, removed in v8)
+        params={"command_name": "motion", "std": 0.8},
     )
 
-    # -- explicit end-effector tracking (for "Spring Festival Gala" precision & explosiveness)
-    # Target hands and feet with tighter stds to ensure crisp punches and snappy kicks
+    # -- end-effector tracking (relaxed for dynamic motions)
     motion_ee_pos = RewTerm(
         func=mdp.motion_relative_body_position_error_exp,
-        weight=3.0,  # highly prioritized
-        params={"command_name": "motion", "std": 0.2, "body_names": END_EFFECTOR_BODIES},
-    )
-    motion_ee_lin_vel = RewTerm(
-        func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=1.0,  # emphasize the striking snappy velocity
-        params={"command_name": "motion", "std": 1.0, "body_names": END_EFFECTOR_BODIES},
+        weight=1.5,
+        params={
+            "command_name": "motion",
+            "std": 0.3,
+            "body_names": END_EFFECTOR_BODIES,
+        },
     )
 
-    # -- velocity tracking (widened std → less dominant vs position)
+    # -- velocity tracking
     motion_body_lin_vel = RewTerm(
         func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=0.5,  # ↓ from 1.0 — don't fight position tracking
-        params={"command_name": "motion", "std": 1.5},  # ↑ from 1.0
+        weight=1.0,
+        params={"command_name": "motion", "std": 1.5},
     )
     motion_body_ang_vel = RewTerm(
         func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=0.5,  # ↓ from 1.0
-        params={"command_name": "motion", "std": 4.0},  # ↑ from 3.14
+        weight=1.0,
+        params={"command_name": "motion", "std": 3.14},
     )
 
-    # -- contact penalty
+    # -- contact penalty (v9: weight -0.1 → -1.0 — much stronger!)
+    # v8's -0.1 was too weak; the policy ignored it and put knees on ground.
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-0.1,
+        weight=-1.0,  # v9: 10x stronger penalty for forbidden body contacts
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -353,30 +432,56 @@ class MartialArtsRewardsCfg:
 class MartialArtsTerminationsCfg:
     """Termination terms for martial arts tasks.
 
-    v2: Tightened thresholds to match gangnam_style — prevents bad poses
-    from surviving long enough to pollute the training data.
+    v9: Added illegal_contact termination for body parts that must not
+    touch the ground (knees, elbows, torso, pelvis, waist, hips).
+    This is a hard termination — episode ends immediately on contact.
+
+    Note: body_names must be actual articulation bodies (the 30 bodies
+    exposed by PhysX). Fixed-joint links like pelvis_contour_link,
+    logo_link, head_link are merged into their parents and cannot be
+    used here.
     """
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
 
-    # Z-only anchor position check — match gangnam (0.25)
+    # Z-only anchor position check (v8: relaxed to 0.5m for kicks)
     anchor_pos = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
-        params={"command_name": "motion", "threshold": 0.25},  # ↓ from 0.3
+        params={"command_name": "motion", "threshold": 0.5},
     )
+    # Orientation tolerance (v8: relaxed to 1.2 for spinning kicks)
     anchor_ori = DoneTerm(
         func=mdp.bad_anchor_ori,
-        params={"asset_cfg": SceneEntityCfg("robot"), "command_name": "motion", "threshold": 0.8},  # ↓ from 0.9
+        params={"asset_cfg": SceneEntityCfg("robot"), "command_name": "motion", "threshold": 1.2},
     )
-    # End-effector tracking: terminate if hands/feet deviate too far
-    # v4: Raised from 0.25 to 0.6 — front kick raises foot to ~0.8m,
-    # a 0.25m z-threshold was terminating episodes mid-kick!
+    # End-effector tracking (v8: relaxed to 0.8 for kick trajectories)
     ee_body_pos = DoneTerm(
         func=mdp.bad_motion_body_pos_z_only,
         params={
             "command_name": "motion",
-            "threshold": 0.6,  # ↑ from 0.25 — allows feet to be raised during kicks
+            "threshold": 0.8,
             "body_names": END_EFFECTOR_BODIES,
+        },
+    )
+
+    # v9 NEW: Illegal body contact termination
+    # Terminate immediately if forbidden body parts touch the ground.
+    # This prevents: 膝盖着地 (knees on ground), 胳膊着地 (elbows on ground),
+    # torso/pelvis collapse.
+    # Only feet (ankle_roll_link) and hands (wrist_yaw_link) are allowed
+    # ground contact during martial arts.
+    #
+    # NOTE: body_names must be actual articulation bodies (30 bodies from
+    # PhysX). Fixed-joint links (pelvis_contour_link, logo_link, head_link)
+    # are merged into parents and must NOT be used here.
+    illegal_contact = DoneTerm(
+        func=mdp.illegal_contact,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=ILLEGAL_CONTACT_BODIES,
+            ),
+            "threshold": 100.0,  # N — generous threshold to avoid false positives
         },
     )
 
